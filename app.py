@@ -1,10 +1,10 @@
 import streamlit as st
 import pandas as pd
-import pdfplumber
 import re
+import requests
 
-st.set_page_config(page_title="Vóley Stats - Inferiores", layout="wide")
-
+# --- Configuración de la página ---
+st.set_page_config(page_title="Vóley Stats - MetroVoley", layout="wide")
 st.markdown("""
 <style>
     @media (max-width: 768px) {
@@ -20,95 +20,66 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-def parse_pdf_to_matches(uploaded_file):
+# ------------------------------------------------------------
+# Funciones de extracción desde la web
+# ------------------------------------------------------------
+def fetch_table_from_web(url):
     """
-    Parsea el PDF extrayendo resultados y asignando la categoría más cercana.
+    Obtiene la tabla de posiciones desde una URL de MetroVoley usando r.jina.ai.
     """
-    matches = []
-    with pdfplumber.open(uploaded_file) as pdf:
-        full_text = ""
-        for page in pdf.pages:
-            text = page.extract_text()
-            if text:
-                full_text += text + "\n"
-    
-    lines = full_text.split("\n")
-    lines = [line.strip() for line in lines if line.strip()]
-    
-    # Patrón para resultado: EQUIPO1  X - Y  EQUIPO2
-    result_pattern = re.compile(
-        r'([A-Z0-9\-]+)\s+(\d+)\s*[-–]\s*(\d+)\s+([A-Z0-9\-]+)',
-        re.IGNORECASE
-    )
-    # Patrón para categoría: Sub 11, Sáb 11, Sab 11
-    cat_pattern = re.compile(r'(?:Sub|Sáb|Sab)\s*(\d{1,2})', re.IGNORECASE)
-    
-    # Correcciones de OCR para nombres de equipos
-    corrections = {
-        "LPA-MPV": "LPV-MFV", "FEBRO": "FERRO", "FERR0": "FERRO",
-        "SHOLEM": "SHOLEM", "CAI": "CAI", "VIAVE": "VIAVE",
-        "BPLP": "BPLP", "BPLP B": "BPLP", "GLORIAS": "GLORIAS",
-        "CAPAL": "CAPAL", "COUNTRY": "COUNTRY", "LANUS": "LANUS",
-        "ULP": "ULP", "GMB": "GMB", "LPV-MFV": "LPV-MFV",
-        "ANDO": "LANUS"
-    }
-    
-    # Preprocesar líneas: guardar índices donde aparece categoría
-    category_indices = []
-    for i, line in enumerate(lines):
-        cat_match = cat_pattern.search(line)
-        if cat_match:
-            cat_num = int(cat_match.group(1))
-            if 11 <= cat_num <= 21:
-                category_indices.append((i, f"Sub {cat_num}"))
-    
-    # Recorrer cada línea buscando resultados
-    for i, line in enumerate(lines):
-        # Ignorar líneas con "vs"
-        if re.search(r'\bvs\b', line, re.IGNORECASE):
+    api_url = f"https://r.jina.ai/{url}"
+    try:
+        response = requests.get(api_url)
+        response.raise_for_status()
+        content = response.text
+        return content
+    except requests.RequestException as e:
+        st.error(f"Error al obtener los datos desde la web: {e}")
+        return None
+
+def parse_web_content(content):
+    """
+    Parsea el contenido Markdown devuelto por r.jina.ai y extrae la tabla de posiciones.
+    """
+    lines = content.split("\n")
+    data = []
+    start_parsing = False
+    for line in lines:
+        # Buscar el inicio de la tabla
+        if line.startswith("| Pos | Equipo | PTS |"):
+            start_parsing = True
             continue
-        
-        result_match = result_pattern.search(line)
-        if not result_match:
-            continue
-        
-        raw_team1 = result_match.group(1)
-        sets1 = int(result_match.group(2))
-        sets2 = int(result_match.group(3))
-        raw_team2 = result_match.group(4)
-        
-        # Ignorar resultados inválidos (empate en sets)
-        if sets1 == sets2:
-            continue
-        
-        team1 = corrections.get(raw_team1, raw_team1)
-        team2 = corrections.get(raw_team2, raw_team2)
-        
-        # Encontrar la categoría más cercana (en número de líneas)
-        best_cat = None
-        best_dist = float('inf')
-        for idx_cat, cat in category_indices:
-            dist = abs(i - idx_cat)
-            if dist < best_dist:
-                best_dist = dist
-                best_cat = cat
-        
-        # Si no se encontró categoría (por ejemplo, primeras líneas), se ignora
-        if best_cat is None:
-            continue
-        
-        matches.append({
-            "categoria": best_cat,
-            "team1": team1,
-            "team2": team2,
-            "sets1": sets1,
-            "sets2": sets2,
-        })
-    
-    return matches, lines
+        if start_parsing and line.startswith("|"):
+            # Limpiar la línea y dividir por '|'
+            parts = [part.strip() for part in line.split("|") if part.strip()]
+            if len(parts) >= 12:  # Asegurar que tenemos suficientes columnas
+                # Extraer solo el nombre del equipo (eliminar el marcado de la imagen)
+                equipo = re.sub(r'!\[.*?\]\(.*?\)', '', parts[1]).strip()
+                try:
+                    row = {
+                        "Pos": int(parts[0]),
+                        "equipo": equipo,
+                        "PTS": int(parts[2]),
+                        "PG": int(parts[3]),
+                        "PJ": int(parts[4]),
+                        "PP": int(parts[5]),
+                        "PPP": int(parts[6]),
+                        "DS": int(parts[7]),
+                        "SG": int(parts[8]),
+                        "SP": int(parts[9]),
+                        "DT": int(parts[10]),
+                        "TG": int(parts[11]),
+                        "TP": int(parts[12]) if len(parts) > 12 else 0,
+                    }
+                    data.append(row)
+                except (ValueError, IndexError):
+                    continue
+        elif start_parsing and not line.startswith("|"):
+            break
+    return pd.DataFrame(data)
 
 # ------------------------------------------------------------
-# (El resto de las funciones: create_match_record, compute_team_stats, interfaz se mantienen igual)
+# Funciones de procesamiento de datos (igual que antes)
 # ------------------------------------------------------------
 def create_match_record(team, category, win, sets_for, sets_against):
     points_earned = 2 if win else 1
@@ -198,65 +169,49 @@ def compute_team_stats(matches):
 # ------------------------------------------------------------
 # Interfaz de usuario
 # ------------------------------------------------------------
-st.title("🏐 Vóley Stats - Inferiores")
-st.markdown("Cargá el PDF con los resultados. El programa detecta automáticamente el formato.")
-st.info("ℹ️ **Nota:** El PDF no contiene los tantos por set. Las columnas `TG`, `TP` y `DT` se muestran como **0**.")
+st.title("🏐 Vóley Stats - MetroVoley")
+st.markdown("Cargá los datos desde la web de MetroVoley o desde un archivo PDF.")
 
-uploaded_file = st.file_uploader("📂 Subí tu archivo PDF", type="pdf")
+# Crear pestañas para elegir la fuente de datos
+tab1, tab2 = st.tabs(["🌐 Desde la Web", "📄 Desde un PDF"])
 
-if uploaded_file is not None:
-    with st.spinner("Procesando el PDF..."):
-        matches, lines = parse_pdf_to_matches(uploaded_file)
-    
-    # Mostrar partidos detectados para depuración
-    with st.expander("🔍 Ver partidos detectados (para verificar categorías)"):
-        if matches:
-            df_matches = pd.DataFrame(matches)
-            st.dataframe(df_matches)
-            st.write(f"Total partidos: {len(matches)}")
+with tab1:
+    st.subheader("Obtener datos desde MetroVoley")
+    url = st.text_input("Ingresá la URL del torneo (ej. https://metrovoley.com.ar/tournaments/570?stage=1420&group=3723&category=14)")
+    if st.button("Obtener Tabla de Posiciones"):
+        if url:
+            with st.spinner("Obteniendo datos desde la web..."):
+                content = fetch_table_from_web(url)
+                if content:
+                    df_web = parse_web_content(content)
+                    if not df_web.empty:
+                        st.success("✅ Datos obtenidos correctamente.")
+                        st.subheader("Tabla de Posiciones")
+                        st.dataframe(df_web, use_container_width=True)
+                        
+                        # Convertir la tabla de posiciones al formato de partidos para la Tira
+                        # Como la tabla web ya tiene la suma por equipo, la usamos directamente para la Tira
+                        tira_web = df_web[["equipo", "PTS", "PG", "PJ", "PP", "PPP", "DS", "SG", "SP", "DT", "TG", "TP"]].copy()
+                        tira_web.insert(0, "Pos", range(1, len(tira_web)+1))
+                        st.subheader("📊 Tira - Sumatoria de todas las categorías")
+                        st.dataframe(tira_web, use_container_width=True, height=400)
+                        
+                        st.download_button(
+                            label="📥 Descargar Tira (CSV)",
+                            data=tira_web.to_csv(index=False).encode("utf-8"),
+                            file_name="tira_voley.csv",
+                            mime="text/csv"
+                        )
+                    else:
+                        st.error("No se pudo extraer la tabla de posiciones. Verificá la URL.")
+                else:
+                    st.error("No se pudo obtener el contenido de la URL.")
         else:
-            st.warning("No se detectaron partidos.")
-            st.text("Primeras 30 líneas del PDF:")
-            for i, line in enumerate(lines[:30]):
-                st.text(f"{i+1}: {line}")
-    
-    if not matches:
-        st.error("No se encontraron partidos. Revisá la depuración arriba.")
-        st.stop()
-    
-    st.success(f"✅ Se procesaron {len(matches)} partidos.")
-    stats_cat, tira_df = compute_team_stats(matches)
-    
-    with st.sidebar:
-        st.header("🔍 Filtros")
-        categorias = sorted(stats_cat["categoria"].unique())
-        equipos = sorted(stats_cat["equipo"].unique())
-        cat_filter = st.multiselect("Categorías", categorias, default=categorias)
-        team_filter = st.multiselect("Equipos", equipos, default=[])
-    
-    st.subheader("🏆 Tabla de posiciones por categoría")
-    if cat_filter:
-        for cat in cat_filter:
-            df_cat = stats_cat[stats_cat["categoria"] == cat].copy()
-            if not df_cat.empty:
-                cols_mobile = ["Pos", "equipo", "PTS", "PG", "PJ", "DS", "SG"]
-                df_mobile = df_cat[cols_mobile]
-                with st.expander(f"📌 {cat}", expanded=True):
-                    st.dataframe(df_mobile, use_container_width=True, height=300)
-                    if st.button(f"Ver todas las columnas de {cat}", key=f"full_{cat}"):
-                        st.dataframe(df_cat, use_container_width=True)
-            else:
-                st.info(f"No hay datos para {cat}")
-    else:
-        st.info("Seleccioná al menos una categoría en el filtro lateral.")
-    
-    st.subheader("📊 Tira - Sumatoria de todas las categorías")
-    st.dataframe(tira_df, use_container_width=True, height=400)
-    st.download_button(
-        label="📥 Descargar Tira (CSV)",
-        data=tira_df.to_csv(index=False).encode("utf-8"),
-        file_name="tira_voley.csv",
-        mime="text/csv"
-    )
-else:
-    st.info("Esperando la carga del archivo PDF...")
+            st.warning("Por favor, ingresá una URL.")
+
+with tab2:
+    st.subheader("Procesar un archivo PDF")
+    uploaded_file = st.file_uploader("📂 Subí tu archivo PDF", type="pdf")
+    if uploaded_file is not None:
+        st.warning("La funcionalidad de procesamiento de PDF está en desarrollo. Por ahora, usá la opción desde la web.")
+        # Aquí iría el código para procesar el PDF (similar al anterior)

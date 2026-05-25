@@ -20,6 +20,9 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# ------------------------------------------------------------
+# Parseador con depuración
+# ------------------------------------------------------------
 def parse_pdf_to_matches(uploaded_file):
     matches = []
     debug_lines = []
@@ -32,18 +35,25 @@ def parse_pdf_to_matches(uploaded_file):
     lines = full_text.split("\n")
     lines = [line.strip() for line in lines if line.strip()]
     debug_lines = lines.copy()
+    
+    # Patrón más flexible: permite nombres de equipos con guiones y números
     result_pattern = re.compile(
         r'([A-Z0-9\-]+)\s+(\d+)\s*[-–]\s*(\d+)\s+([A-Z0-9\-]+)',
         re.IGNORECASE
     )
     cat_pattern = re.compile(r'(?:Sub|Sáb|Sab)\s*(\d{1,2})', re.IGNORECASE)
+    
+    # Correcciones comunes
     corrections = {
         "LPA-MPV": "LPV-MFV", "FEBRO": "FERRO", "FERR0": "FERRO",
         "SHOLEM": "SHOLEM", "CAI": "CAI", "VIAVE": "VIAVE",
-        "BPLP": "BPLP", "GLORIAS": "GLORIAS", "CAPAL": "CAPAL",
-        "COUNTRY": "COUNTRY", "LANUS": "LANUS", "ULP": "ULP", "GMB": "GMB"
+        "BPLP": "BPLP", "BPLP B": "BPLP", "GLORIAS": "GLORIAS",
+        "CAPAL": "CAPAL", "COUNTRY": "COUNTRY", "LANUS": "LANUS",
+        "ULP": "ULP", "GMB": "GMB", "LPV-MFV": "LPV-MFV"
     }
+    
     for i, line in enumerate(lines):
+        # Ignorar líneas con "vs"
         if re.search(r'\bvs\b', line, re.IGNORECASE):
             continue
         result_match = result_pattern.search(line)
@@ -55,6 +65,8 @@ def parse_pdf_to_matches(uploaded_file):
         raw_team2 = result_match.group(4)
         team1 = corrections.get(raw_team1, raw_team1)
         team2 = corrections.get(raw_team2, raw_team2)
+        
+        # Buscar categoría (hasta 3 líneas arriba/abajo)
         categoria = None
         for offset in range(-3, 4):
             idx = i + offset
@@ -73,41 +85,30 @@ def parse_pdf_to_matches(uploaded_file):
             "team2": team2,
             "sets1": sets1,
             "sets2": sets2,
-            "set_scores": None,
-            "forfeit": None
         })
     return matches, debug_lines
 
-def create_match_record(team, category, win, forfeit, forfeit_opponent=False,
-                        sets_for=0, sets_against=0, points_for=0, points_against=0):
-    if forfeit:
-        points_earned = 0
-        loss_normal = False
-        loss_forfeit = True
-        win_flag = False
-    elif forfeit_opponent:
-        points_earned = 2
-        loss_normal = False
-        loss_forfeit = False
-        win_flag = True
-    else:
-        points_earned = 2 if win else 1
-        loss_normal = not win
-        loss_forfeit = False
-        win_flag = win
+# ------------------------------------------------------------
+# Crear registro de partido
+# ------------------------------------------------------------
+def create_match_record(team, category, win, sets_for, sets_against):
+    points_earned = 2 if win else 1   # Ganado = 2, Perdido = 1
     return {
         "equipo": team,
         "categoria": category,
-        "win": win_flag,
-        "loss_normal": loss_normal,
-        "loss_forfeit": loss_forfeit,
+        "win": win,
+        "loss_normal": not win,
+        "loss_forfeit": False,
         "points_earned": points_earned,
         "sets_for": sets_for,
         "sets_against": sets_against,
-        "points_for": points_for,
-        "points_against": points_against
+        "points_for": 0,
+        "points_against": 0
     }
 
+# ------------------------------------------------------------
+# Calcular estadísticas con ordenamiento correcto
+# ------------------------------------------------------------
 def compute_team_stats(matches):
     records = []
     for match in matches:
@@ -117,19 +118,12 @@ def compute_team_stats(matches):
         sets1 = match["sets1"]
         sets2 = match["sets2"]
         team1_wins = sets1 > sets2
-        records.append(create_match_record(team1, cat,
-                                           win=team1_wins,
-                                           forfeit=False,
-                                           sets_for=sets1,
-                                           sets_against=sets2))
-        records.append(create_match_record(team2, cat,
-                                           win=not team1_wins,
-                                           forfeit=False,
-                                           sets_for=sets2,
-                                           sets_against=sets1))
-    if not records:
-        return pd.DataFrame(), pd.DataFrame()
+        records.append(create_match_record(team1, cat, team1_wins, sets1, sets2))
+        records.append(create_match_record(team2, cat, not team1_wins, sets2, sets1))
+    
     df_raw = pd.DataFrame(records)
+    
+    # Agrupar por categoría y equipo
     def agg_func(group):
         total_pj = len(group)
         total_pg = group["win"].sum()
@@ -151,23 +145,29 @@ def compute_team_stats(matches):
             "DS": total_sg - total_sp,
             "DT": 0
         })
+    
     stats_cat = df_raw.groupby(["categoria", "equipo"]).apply(agg_func).reset_index()
-    cols_order = ["categoria", "equipo", "PTS", "PG", "PJ", "PP", "PPP", "DS", "SG", "SP", "DT", "TG", "TP"]
-    for col in cols_order:
-        if col not in stats_cat.columns:
-            stats_cat[col] = 0
-    stats_cat = stats_cat[cols_order]
-    stats_cat["Pos"] = stats_cat.groupby("categoria").apply(
-        lambda g: g.sort_values(["PTS", "DS", "SG"], ascending=[False, False, False]).reset_index(drop=True).index + 1
-    ).reset_index(level=0, drop=True)
-    stats_cat = stats_cat[["categoria", "Pos", "equipo", "PTS", "PG", "PJ", "PP", "PPP", "DS", "SG", "SP", "DT", "TG", "TP"]]
-
-    # Convertir columnas numéricas a int (evitar NaN)
-    numeric_cols = ["Pos", "PTS", "PG", "PJ", "PP", "PPP", "DS", "SG", "SP", "DT", "TG", "TP"]
+    
+    # Asegurar tipos numéricos
+    numeric_cols = ["PTS", "PG", "PJ", "PP", "PPP", "SG", "SP", "DS", "DT", "TG", "TP"]
     for col in numeric_cols:
         stats_cat[col] = pd.to_numeric(stats_cat[col], errors='coerce').fillna(0).astype(int)
-
-    # Tira general
+    
+    # Ordenar y asignar posición dentro de cada categoría
+    stats_cat_sorted = []
+    for cat in stats_cat["categoria"].unique():
+        df_cat = stats_cat[stats_cat["categoria"] == cat].copy()
+        # Ordenar por PTS descendente, luego DS, luego SG
+        df_cat = df_cat.sort_values(["PTS", "DS", "SG"], ascending=[False, False, False])
+        df_cat["Pos"] = range(1, len(df_cat) + 1)
+        stats_cat_sorted.append(df_cat)
+    stats_cat = pd.concat(stats_cat_sorted, ignore_index=True)
+    
+    # Reordenar columnas según lo pedido
+    cols_order = ["categoria", "Pos", "equipo", "PTS", "PG", "PJ", "PP", "PPP", "DS", "SG", "SP", "DT", "TG", "TP"]
+    stats_cat = stats_cat[cols_order]
+    
+    # Tira general (suma todas las categorías)
     tira = stats_cat.groupby("equipo").agg({
         "PTS": "sum",
         "PG": "sum",
@@ -182,12 +182,16 @@ def compute_team_stats(matches):
     tira["DS"] = tira["SG"] - tira["SP"]
     tira["DT"] = 0
     tira = tira.sort_values(["PTS", "DS", "SG"], ascending=[False, False, False])
-    tira.insert(0, "Pos", range(1, len(tira)+1))
+    tira.insert(0, "Pos", range(1, len(tira) + 1))
     tira = tira[["Pos", "equipo", "PTS", "PG", "PJ", "PP", "PPP", "DS", "SG", "SP", "DT", "TG", "TP"]]
-    for col in ["Pos", "PTS", "PG", "PJ", "PP", "PPP", "DS", "SG", "SP", "DT", "TG", "TP"]:
-        tira[col] = pd.to_numeric(tira[col], errors='coerce').fillna(0).astype(int)
+    for col in ["PTS", "PG", "PJ", "PP", "PPP", "SG", "SP", "DS"]:
+        tira[col] = tira[col].astype(int)
+    
     return stats_cat, tira
 
+# ------------------------------------------------------------
+# Interfaz de usuario
+# ------------------------------------------------------------
 st.title("🏐 Vóley Stats - Inferiores")
 st.markdown("Cargá el PDF con los resultados. El programa detecta automáticamente el formato.")
 st.info("ℹ️ **Nota:** El PDF no contiene los tantos por set. Las columnas `TG`, `TP` y `DT` se muestran como **0**.")
@@ -197,21 +201,23 @@ uploaded_file = st.file_uploader("📂 Subí tu archivo PDF", type="pdf")
 if uploaded_file is not None:
     with st.spinner("Procesando el PDF..."):
         matches, debug_lines = parse_pdf_to_matches(uploaded_file)
-    if not matches:
-        st.error("No se encontraron partidos en el formato esperado.")
-        with st.expander("🔍 Ver líneas leídas del PDF (primeras 40)"):
-            for i, line in enumerate(debug_lines[:40]):
+    
+    # Mostrar depuración: partidos extraídos
+    with st.expander("🔍 Ver partidos detectados (para depuración)"):
+        if matches:
+            df_matches = pd.DataFrame(matches)
+            st.dataframe(df_matches)
+            st.write(f"Total partidos: {len(matches)}")
+        else:
+            st.warning("No se detectaron partidos.")
+            st.text("Primeras 30 líneas del PDF:")
+            for i, line in enumerate(debug_lines[:30]):
                 st.text(f"{i+1}: {line}")
-        with st.expander("ℹ️ Explicación del formato detectado"):
-            st.markdown("""
-            Se espera una línea con resultado como:
-            - `LANUS 0 - 2 ULP`
-            - `LPV-MFV 3 - 1 FERRO`
-            
-            Y la categoría debe aparecer cerca (arriba o abajo) en una línea que contenga `Sub 11`, `Sáb 11`, etc.
-            Si ves errores de OCR como `Sáb 12` en lugar de `Sub 12`, el programa los interpreta correctamente.
-            """)
+    
+    if not matches:
+        st.error("No se encontraron partidos. Revisá la depuración arriba.")
         st.stop()
+    
     st.success(f"✅ Se procesaron {len(matches)} partidos.")
     stats_cat, tira_df = compute_team_stats(matches)
     
@@ -227,9 +233,7 @@ if uploaded_file is not None:
         for cat in cat_filter:
             df_cat = stats_cat[stats_cat["categoria"] == cat].copy()
             if not df_cat.empty:
-                # Asegurar tipos enteros
-                for col in ["Pos", "PTS", "PG", "PJ", "DS", "SG"]:
-                    df_cat[col] = df_cat[col].astype(int)
+                # Mostrar ordenado por Pos (que ya está bien)
                 cols_mobile = ["Pos", "equipo", "PTS", "PG", "PJ", "DS", "SG"]
                 df_mobile = df_cat[cols_mobile]
                 with st.expander(f"📌 {cat}", expanded=True):

@@ -2,18 +2,45 @@ import streamlit as st
 import pandas as pd
 import pdfplumber
 import re
-from io import BytesIO
+
+# ------------------------------------------------------------
+# Configuración responsive para móviles y tablets
+# ------------------------------------------------------------
+st.set_page_config(page_title="Vóley Stats", layout="wide", initial_sidebar_state="auto")
+st.markdown("""
+<style>
+    @media (max-width: 768px) {
+        .stDataFrame div[data-testid="stDataFrameResizable"] table td:nth-child(7),
+        .stDataFrame div[data-testid="stDataFrameResizable"] table th:nth-child(7) {
+            display: none;
+        }
+        .stDataFrame div[data-testid="stDataFrameResizable"] table td:nth-child(9),
+        .stDataFrame div[data-testid="stDataFrameResizable"] table th:nth-child(9) {
+            display: none;
+        }
+        .stMarkdown, .stSelectbox label, .stMultiSelect label {
+            font-size: 16px;
+        }
+        .stButton button {
+            font-size: 18px;
+            padding: 8px 16px;
+            width: 100%;
+        }
+        h1, h2, h3 {
+            font-size: 1.8rem;
+        }
+        .main > div {
+            padding-left: 1rem;
+            padding-right: 1rem;
+        }
+    }
+</style>
+""", unsafe_allow_html=True)
 
 # ------------------------------------------------------------
 # Funciones de parseo del PDF
 # ------------------------------------------------------------
 def parse_pdf_to_matches(uploaded_file):
-    """
-    Extrae los partidos del PDF.
-    Formato esperado por línea:
-    Categoría: <nombre> | EquipoA | EquipoB | setsA | setsB | set1,set2,...
-    O con W/O: Categoría: ... | EquipoA | EquipoB | W/O
-    """
     matches = []
     with pdfplumber.open(uploaded_file) as pdf:
         full_text = ""
@@ -21,13 +48,10 @@ def parse_pdf_to_matches(uploaded_file):
             full_text += page.extract_text() + "\n"
 
     lines = full_text.split("\n")
-    # Expresiones regulares
-    # Partido normal con sets y detalles de tantos
     pattern_normal = re.compile(
         r"Categoría:\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(\d+)\s*\|\s*(\d+)\s*\|\s*(.*)",
         re.IGNORECASE
     )
-    # Partido por no presentación
     pattern_wo = re.compile(
         r"Categoría:\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(.*?)\s*\|\s*W/O",
         re.IGNORECASE
@@ -38,7 +62,6 @@ def parse_pdf_to_matches(uploaded_file):
         if not line:
             continue
 
-        # Buscar no presentación
         wo_match = pattern_wo.search(line)
         if wo_match:
             category = wo_match.group(1).strip()
@@ -51,14 +74,10 @@ def parse_pdf_to_matches(uploaded_file):
                 "sets1": None,
                 "sets2": None,
                 "set_scores": None,
-                "forfeit": team1  # el equipo que no se presenta será el que aparece como perdedor? asumimos team1 es el que no se presenta? Mejor: reordenar.
-                # En este formato no sabemos quién falta. Asumiremos que el primero es el que no se presenta.
-                # En la práctica, lo definimos: el equipo que no se presenta es team1, team2 gana por walkover.
-                # Lo trataremos en el cálculo.
+                "forfeit": team1
             })
             continue
 
-        # Partido normal
         norm_match = pattern_normal.search(line)
         if norm_match:
             category = norm_match.group(1).strip()
@@ -67,7 +86,6 @@ def parse_pdf_to_matches(uploaded_file):
             sets1 = int(norm_match.group(4))
             sets2 = int(norm_match.group(5))
             set_scores_str = norm_match.group(6)
-            # Parsear los sets: "25-20,25-22,23-25,25-18"
             set_scores = []
             for score in set_scores_str.split(","):
                 score = score.strip()
@@ -90,58 +108,71 @@ def parse_pdf_to_matches(uploaded_file):
                 "forfeit": None
             })
             continue
-
-        # Si no coincide ninguna línea, se omite
     return matches
 
-# ------------------------------------------------------------
-# Cálculo de estadísticas por equipo y categoría
-# ------------------------------------------------------------
-def compute_team_stats(matches):
-    """
-    Retorna dos DataFrames:
-    - stats_por_categoria: multiíndice (categoria, equipo)
-    - stats_tira: agregado por equipo (suma de todas las categorías)
-    """
-    records = []  # list para construir el DF final
+def create_match_record(team, category, win, forfeit, forfeit_opponent=False,
+                        sets_for=0, sets_against=0, points_for=0, points_against=0):
+    if forfeit:
+        points_earned = 0
+        loss_normal = False
+        loss_forfeit = True
+        win_flag = False
+    elif forfeit_opponent:
+        points_earned = 2
+        loss_normal = False
+        loss_forfeit = False
+        win_flag = True
+    else:
+        if win:
+            points_earned = 2
+            loss_normal = False
+        else:
+            points_earned = 1
+            loss_normal = True
+        loss_forfeit = False
+        win_flag = win
 
+    return {
+        "equipo": team,
+        "categoria": category,
+        "win": win_flag,
+        "loss_normal": loss_normal,
+        "loss_forfeit": loss_forfeit,
+        "points_earned": points_earned,
+        "sets_for": sets_for,
+        "sets_against": sets_against,
+        "points_for": points_for,
+        "points_against": points_against
+    }
+
+def compute_team_stats(matches):
+    records = []
     for match in matches:
         cat = match["categoria"]
         team1 = match["team1"]
         team2 = match["team2"]
         forfeit = match["forfeit"]
 
-        # Caso walkover / no presentación
         if forfeit is not None:
-            # Quien no se presenta: pierde 0 puntos, PPP+1
-            # El otro equipo gana 2 puntos, PG+1, sets 3-0, tantos 75-0
             losing_team = forfeit
             winning_team = team2 if team1 == losing_team else team1
-
-            # Ganador
             records.append(create_match_record(winning_team, cat,
                                                win=True, forfeit_opponent=True,
                                                sets_for=3, sets_against=0,
                                                points_for=75, points_against=0))
-            # Perdedor por no presentación
             records.append(create_match_record(losing_team, cat,
                                                win=False, forfeit=True,
                                                sets_for=0, sets_against=3,
                                                points_for=0, points_against=75))
             continue
 
-        # Partido normal con datos de sets y tantos
         sets1 = match["sets1"]
         sets2 = match["sets2"]
         set_scores = match["set_scores"]
-
-        # Determinar ganador
         team1_wins = sets1 > sets2
-        # Calcular tantos totales por equipo a partir de set_scores
         points1 = sum(s[0] for s in set_scores) if set_scores else 0
         points2 = sum(s[1] for s in set_scores) if set_scores else 0
 
-        # Registro para team1
         records.append(create_match_record(team1, cat,
                                            win=team1_wins,
                                            forfeit=False,
@@ -149,7 +180,6 @@ def compute_team_stats(matches):
                                            sets_against=sets2,
                                            points_for=points1,
                                            points_against=points2))
-        # Registro para team2
         records.append(create_match_record(team2, cat,
                                            win=not team1_wins,
                                            forfeit=False,
@@ -160,7 +190,6 @@ def compute_team_stats(matches):
 
     df_raw = pd.DataFrame(records)
 
-    # Agrupar por categoria y equipo
     def agg_func(group):
         total_pj = len(group)
         total_pg = group["win"].sum()
@@ -186,19 +215,15 @@ def compute_team_stats(matches):
         })
 
     stats_cat = df_raw.groupby(["categoria", "equipo"]).apply(agg_func).reset_index()
-    # Reordenar columnas según lo pedido
     cols_order = ["categoria", "equipo", "PTS", "PG", "PJ", "PP", "PPP", "DS", "SG", "SP", "DT", "TG", "TP"]
     stats_cat = stats_cat[cols_order]
 
-    # Calcular posición dentro de cada categoría
     stats_cat["Pos"] = stats_cat.groupby("categoria").apply(
         lambda g: g.sort_values(["PTS", "DS", "SG"], ascending=[False, False, False]).reset_index(drop=True).index + 1
     ).reset_index(level=0, drop=True)
 
-    # Reordenar columnas para que Pos sea la primera
     stats_cat = stats_cat[["categoria", "Pos", "equipo", "PTS", "PG", "PJ", "PP", "PPP", "DS", "SG", "SP", "DT", "TG", "TP"]]
 
-    # Tabla TIRA: sumar todas las categorías para cada equipo
     tira = stats_cat.groupby("equipo").agg({
         "PTS": "sum",
         "PG": "sum",
@@ -217,60 +242,56 @@ def compute_team_stats(matches):
     tira = tira[["Pos", "equipo", "PTS", "PG", "PJ", "PP", "PPP", "DS", "SG", "SP", "DT", "TG", "TP"]]
     return stats_cat, tira
 
-def create_match_record(team, category, win, forfeit, forfeit_opponent=False,
-                        sets_for=0, sets_against=0, points_for=0, points_against=0):
-    """Crea un registro de un partido para un equipo específico."""
-    if forfeit:
-        # Equipo que no se presenta
-        points_earned = 0
-        loss_normal = False
-        loss_forfeit = True
-        win_flag = False
-    elif forfeit_opponent:
-        # Equipo que gana por no presentación del rival
-        points_earned = 2
-        loss_normal = False
-        loss_forfeit = False
-        win_flag = True
-    else:
-        # Partido normal
-        if win:
-            points_earned = 2
-            loss_normal = False
-        else:
-            points_earned = 1
-            loss_normal = True
-        loss_forfeit = False
-        win_flag = win
-
-    return {
-        "equipo": team,
-        "categoria": category,
-        "win": win_flag,
-        "loss_normal": loss_normal,
-        "loss_forfeit": loss_forfeit,
-        "points_earned": points_earned,
-        "sets_for": sets_for,
-        "sets_against": sets_against,
-        "points_for": points_for,
-        "points_against": points_against
-    }
-
 # ------------------------------------------------------------
-# Interfaz Streamlit
+# Interfaz Streamlit (CORREGIDA - sin errores de sintaxis)
 # ------------------------------------------------------------
-st.set_page_config(page_title="Estadísticas Vóley", layout="wide")
-st.title("🏐 App de Resultados de Vóley")
-st.markdown("Carga un PDF con los resultados de los partidos y obtén tablas de posiciones por categoría y la **Tira** general.")
+st.title("🏐 Vóley Stats Móvil")
+st.markdown("Carga un PDF con resultados y obtén la tabla de posiciones **por categoría** y la **Tira general**.")
 
 uploaded_file = st.file_uploader("📂 Sube tu archivo PDF", type="pdf")
 
 if uploaded_file is not None:
-    with st.spinner("Procesando el PDF..."):
+    with st.spinner("Procesando..."):
         matches = parse_pdf_to_matches(uploaded_file)
 
     if not matches:
-        st.error("No se encontraron partidos en el PDF. Verifica el formato (ver ayuda más abajo).")
-        with st.expander("📖 Ver formato esperado del PDF"):
-            st.markdown("""
-            Cada partido debe estar en una línea con el siguiente formato:
+        st.error("Formato incorrecto. Revisa la ayuda.")
+        with st.expander("Ver formato esperado"):
+            st.code("Categoría: Sub-18 | Equipo A | Equipo B | 3 | 1 | 25-20,25-22,23-25,25-18")
+            st.code("Categoría: Sub-16 | Equipo C | Equipo D | W/O")
+        st.stop()
+
+    st.success(f"✅ {len(matches)} partidos procesados")
+    stats_cat, tira_df = compute_team_stats(matches)
+
+    with st.sidebar:
+        st.header("🔍 Filtros")
+        categorias = stats_cat["categoria"].unique()
+        equipos = stats_cat["equipo"].unique()
+        cat_filter = st.multiselect("Categoría", categorias, default=list(categorias))
+        team_filter = st.multiselect("Equipo", equipos, default=[])
+
+    st.subheader("🏆 Tabla de posiciones")
+    if cat_filter:
+        for cat in cat_filter:
+            df_cat = stats_cat[stats_cat["categoria"] == cat].copy()
+            if not df_cat.empty:
+                with st.expander(f"📌 {cat} (click para ver)", expanded=True):
+                    cols_mobile = ["Pos", "equipo", "PTS", "PG", "PJ", "DS", "SG"]
+                    st.dataframe(df_cat[cols_mobile], use_container_width=True, height=300)
+                    if st.button(f"Ver todas las columnas de {cat}", key=f"full_{cat}"):
+                        st.dataframe(df_cat, use_container_width=True)
+            else:
+                st.info(f"No hay datos para {cat}")
+    else:
+        st.info("Selecciona al menos una categoría")
+
+    st.subheader("📊 Tira - Suma de todas las categorías")
+    st.dataframe(tira_df, use_container_width=True, height=400)
+    st.download_button("📥 Descargar Tira (CSV)", tira_df.to_csv(index=False), "tira_voley.csv", "text/csv")
+
+else:
+    st.info("Esperando carga de archivo PDF...")
+    with st.expander("ℹ️ Ayuda: Formato del PDF"):
+        st.markdown("""
+        **Formato requerido por línea de partido**:

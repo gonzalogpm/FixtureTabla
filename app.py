@@ -20,76 +20,41 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ------------------------------------------------------------
-# Parseador robusto que funciona con el formato real del PDF
-# ------------------------------------------------------------
 def parse_pdf_to_matches(uploaded_file):
     matches = []
     debug_lines = []
-    
     with pdfplumber.open(uploaded_file) as pdf:
         full_text = ""
         for page in pdf.pages:
             text = page.extract_text()
             if text:
                 full_text += text + "\n"
-    
     lines = full_text.split("\n")
     lines = [line.strip() for line in lines if line.strip()]
-    
-    # Guardamos líneas para depuración
     debug_lines = lines.copy()
-    
-    # Patrón para encontrar resultados: EJEMPLO "LANUS 0 - 2 ULP"
     result_pattern = re.compile(
         r'([A-Z0-9\-]+)\s+(\d+)\s*[-–]\s*(\d+)\s+([A-Z0-9\-]+)',
         re.IGNORECASE
     )
-    
-    # Patrón para detectar categoría (Sub 11, Sub 12, etc. o "Sáb 11" mal leído)
-    cat_pattern = re.compile(
-        r'(?:Sub|Sáb|Sab)\s*(\d{1,2})',
-        re.IGNORECASE
-    )
-    
-    # Correcciones conocidas por OCR
+    cat_pattern = re.compile(r'(?:Sub|Sáb|Sab)\s*(\d{1,2})', re.IGNORECASE)
     corrections = {
-        "LPA-MPV": "LPV-MFV",
-        "FEBRO": "FERRO",
-        "FERR0": "FERRO",
-        "SHOLEM": "SHOLEM",  # bien
-        "CAI": "CAI",
-        "VIAVE": "VIAVE",
-        "BPLP": "BPLP",
-        "GLORIAS": "GLORIAS",
-        "CAPAL": "CAPAL",
-        "COUNTRY": "COUNTRY",
-        "LANUS": "LANUS",
-        "ULP": "ULP",
-        "GMB": "GMB"
+        "LPA-MPV": "LPV-MFV", "FEBRO": "FERRO", "FERR0": "FERRO",
+        "SHOLEM": "SHOLEM", "CAI": "CAI", "VIAVE": "VIAVE",
+        "BPLP": "BPLP", "GLORIAS": "GLORIAS", "CAPAL": "CAPAL",
+        "COUNTRY": "COUNTRY", "LANUS": "LANUS", "ULP": "ULP", "GMB": "GMB"
     }
-    
-    # Recorremos cada línea buscando resultados
     for i, line in enumerate(lines):
-        # Ignorar líneas que contengan "vs"
         if re.search(r'\bvs\b', line, re.IGNORECASE):
             continue
-        
         result_match = result_pattern.search(line)
         if not result_match:
             continue
-        
-        # Extraemos los datos del resultado
         raw_team1 = result_match.group(1)
         sets1 = int(result_match.group(2))
         sets2 = int(result_match.group(3))
         raw_team2 = result_match.group(4)
-        
-        # Corregir nombres de equipos
         team1 = corrections.get(raw_team1, raw_team1)
         team2 = corrections.get(raw_team2, raw_team2)
-        
-        # Buscar la categoría en líneas cercanas (hasta 3 hacia arriba o abajo)
         categoria = None
         for offset in range(-3, 4):
             idx = i + offset
@@ -97,15 +62,11 @@ def parse_pdf_to_matches(uploaded_file):
                 cat_match = cat_pattern.search(lines[idx])
                 if cat_match:
                     cat_num = cat_match.group(1)
-                    # Solo números entre 11 y 21
                     if 11 <= int(cat_num) <= 21:
                         categoria = f"Sub {cat_num}"
                         break
-        
         if not categoria:
-            # Si no encontramos categoría, ignoramos este partido
             continue
-        
         matches.append({
             "categoria": categoria,
             "team1": team1,
@@ -115,12 +76,8 @@ def parse_pdf_to_matches(uploaded_file):
             "set_scores": None,
             "forfeit": None
         })
-    
     return matches, debug_lines
 
-# ------------------------------------------------------------
-# (Las demás funciones: create_match_record, compute_team_stats, interfaz se mantienen igual)
-# ------------------------------------------------------------
 def create_match_record(team, category, win, forfeit, forfeit_opponent=False,
                         sets_for=0, sets_against=0, points_for=0, points_against=0):
     if forfeit:
@@ -204,6 +161,13 @@ def compute_team_stats(matches):
         lambda g: g.sort_values(["PTS", "DS", "SG"], ascending=[False, False, False]).reset_index(drop=True).index + 1
     ).reset_index(level=0, drop=True)
     stats_cat = stats_cat[["categoria", "Pos", "equipo", "PTS", "PG", "PJ", "PP", "PPP", "DS", "SG", "SP", "DT", "TG", "TP"]]
+
+    # Convertir columnas numéricas a int (evitar NaN)
+    numeric_cols = ["Pos", "PTS", "PG", "PJ", "PP", "PPP", "DS", "SG", "SP", "DT", "TG", "TP"]
+    for col in numeric_cols:
+        stats_cat[col] = pd.to_numeric(stats_cat[col], errors='coerce').fillna(0).astype(int)
+
+    # Tira general
     tira = stats_cat.groupby("equipo").agg({
         "PTS": "sum",
         "PG": "sum",
@@ -220,11 +184,10 @@ def compute_team_stats(matches):
     tira = tira.sort_values(["PTS", "DS", "SG"], ascending=[False, False, False])
     tira.insert(0, "Pos", range(1, len(tira)+1))
     tira = tira[["Pos", "equipo", "PTS", "PG", "PJ", "PP", "PPP", "DS", "SG", "SP", "DT", "TG", "TP"]]
+    for col in ["Pos", "PTS", "PG", "PJ", "PP", "PPP", "DS", "SG", "SP", "DT", "TG", "TP"]:
+        tira[col] = pd.to_numeric(tira[col], errors='coerce').fillna(0).astype(int)
     return stats_cat, tira
 
-# ------------------------------------------------------------
-# Interfaz de usuario
-# ------------------------------------------------------------
 st.title("🏐 Vóley Stats - Inferiores")
 st.markdown("Cargá el PDF con los resultados. El programa detecta automáticamente el formato.")
 st.info("ℹ️ **Nota:** El PDF no contiene los tantos por set. Las columnas `TG`, `TP` y `DT` se muestran como **0**.")
@@ -234,7 +197,6 @@ uploaded_file = st.file_uploader("📂 Subí tu archivo PDF", type="pdf")
 if uploaded_file is not None:
     with st.spinner("Procesando el PDF..."):
         matches, debug_lines = parse_pdf_to_matches(uploaded_file)
-    
     if not matches:
         st.error("No se encontraron partidos en el formato esperado.")
         with st.expander("🔍 Ver líneas leídas del PDF (primeras 40)"):
@@ -250,7 +212,6 @@ if uploaded_file is not None:
             Si ves errores de OCR como `Sáb 12` en lugar de `Sub 12`, el programa los interpreta correctamente.
             """)
         st.stop()
-    
     st.success(f"✅ Se procesaron {len(matches)} partidos.")
     stats_cat, tira_df = compute_team_stats(matches)
     
@@ -266,9 +227,13 @@ if uploaded_file is not None:
         for cat in cat_filter:
             df_cat = stats_cat[stats_cat["categoria"] == cat].copy()
             if not df_cat.empty:
+                # Asegurar tipos enteros
+                for col in ["Pos", "PTS", "PG", "PJ", "DS", "SG"]:
+                    df_cat[col] = df_cat[col].astype(int)
+                cols_mobile = ["Pos", "equipo", "PTS", "PG", "PJ", "DS", "SG"]
+                df_mobile = df_cat[cols_mobile]
                 with st.expander(f"📌 {cat}", expanded=True):
-                    cols_mobile = ["Pos", "equipo", "PTS", "PG", "PJ", "DS", "SG"]
-                    st.dataframe(df_cat[cols_mobile], use_container_width=True, height=300)
+                    st.dataframe(df_mobile, use_container_width=True, height=300)
                     if st.button(f"Ver todas las columnas de {cat}", key=f"full_{cat}"):
                         st.dataframe(df_cat, use_container_width=True)
             else:

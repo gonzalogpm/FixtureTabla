@@ -20,9 +20,13 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# ------------------------------------------------------------
+# Parseador robusto que funciona con el formato real del PDF
+# ------------------------------------------------------------
 def parse_pdf_to_matches(uploaded_file):
     matches = []
     debug_lines = []
+    
     with pdfplumber.open(uploaded_file) as pdf:
         full_text = ""
         for page in pdf.pages:
@@ -31,37 +35,92 @@ def parse_pdf_to_matches(uploaded_file):
                 full_text += text + "\n"
     
     lines = full_text.split("\n")
-    pattern = re.compile(
-        r'Sub\s+(\d+)\s+([A-Z0-9\-]+)\s+(\d+)\s*[-–]\s*(\d+)\s+([A-Z0-9\-]+)',
+    lines = [line.strip() for line in lines if line.strip()]
+    
+    # Guardamos líneas para depuración
+    debug_lines = lines.copy()
+    
+    # Patrón para encontrar resultados: EJEMPLO "LANUS 0 - 2 ULP"
+    result_pattern = re.compile(
+        r'([A-Z0-9\-]+)\s+(\d+)\s*[-–]\s*(\d+)\s+([A-Z0-9\-]+)',
         re.IGNORECASE
     )
     
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-        debug_lines.append(line)
+    # Patrón para detectar categoría (Sub 11, Sub 12, etc. o "Sáb 11" mal leído)
+    cat_pattern = re.compile(
+        r'(?:Sub|Sáb|Sab)\s*(\d{1,2})',
+        re.IGNORECASE
+    )
+    
+    # Correcciones conocidas por OCR
+    corrections = {
+        "LPA-MPV": "LPV-MFV",
+        "FEBRO": "FERRO",
+        "FERR0": "FERRO",
+        "SHOLEM": "SHOLEM",  # bien
+        "CAI": "CAI",
+        "VIAVE": "VIAVE",
+        "BPLP": "BPLP",
+        "GLORIAS": "GLORIAS",
+        "CAPAL": "CAPAL",
+        "COUNTRY": "COUNTRY",
+        "LANUS": "LANUS",
+        "ULP": "ULP",
+        "GMB": "GMB"
+    }
+    
+    # Recorremos cada línea buscando resultados
+    for i, line in enumerate(lines):
+        # Ignorar líneas que contengan "vs"
         if re.search(r'\bvs\b', line, re.IGNORECASE):
             continue
-        match = pattern.search(line)
-        if match:
-            category_num = match.group(1)
-            team1 = match.group(2)
-            sets1 = int(match.group(3))
-            sets2 = int(match.group(4))
-            team2 = match.group(5)
-            categoria = f"Sub {category_num}"
-            matches.append({
-                "categoria": categoria,
-                "team1": team1,
-                "team2": team2,
-                "sets1": sets1,
-                "sets2": sets2,
-                "set_scores": None,
-                "forfeit": None
-            })
+        
+        result_match = result_pattern.search(line)
+        if not result_match:
+            continue
+        
+        # Extraemos los datos del resultado
+        raw_team1 = result_match.group(1)
+        sets1 = int(result_match.group(2))
+        sets2 = int(result_match.group(3))
+        raw_team2 = result_match.group(4)
+        
+        # Corregir nombres de equipos
+        team1 = corrections.get(raw_team1, raw_team1)
+        team2 = corrections.get(raw_team2, raw_team2)
+        
+        # Buscar la categoría en líneas cercanas (hasta 3 hacia arriba o abajo)
+        categoria = None
+        for offset in range(-3, 4):
+            idx = i + offset
+            if 0 <= idx < len(lines):
+                cat_match = cat_pattern.search(lines[idx])
+                if cat_match:
+                    cat_num = cat_match.group(1)
+                    # Solo números entre 11 y 21
+                    if 11 <= int(cat_num) <= 21:
+                        categoria = f"Sub {cat_num}"
+                        break
+        
+        if not categoria:
+            # Si no encontramos categoría, ignoramos este partido
+            continue
+        
+        matches.append({
+            "categoria": categoria,
+            "team1": team1,
+            "team2": team2,
+            "sets1": sets1,
+            "sets2": sets2,
+            "set_scores": None,
+            "forfeit": None
+        })
+    
     return matches, debug_lines
 
+# ------------------------------------------------------------
+# (Las demás funciones: create_match_record, compute_team_stats, interfaz se mantienen igual)
+# ------------------------------------------------------------
 def create_match_record(team, category, win, forfeit, forfeit_opponent=False,
                         sets_for=0, sets_against=0, points_for=0, points_against=0):
     if forfeit:
@@ -100,16 +159,6 @@ def compute_team_stats(matches):
         team2 = match["team2"]
         sets1 = match["sets1"]
         sets2 = match["sets2"]
-        if match.get("forfeit"):
-            losing_team = match["forfeit"]
-            winning_team = team2 if team1 == losing_team else team1
-            records.append(create_match_record(winning_team, cat,
-                                               win=True, forfeit_opponent=True,
-                                               sets_for=3, sets_against=0))
-            records.append(create_match_record(losing_team, cat,
-                                               win=False, forfeit=True,
-                                               sets_for=0, sets_against=3))
-            continue
         team1_wins = sets1 > sets2
         records.append(create_match_record(team1, cat,
                                            win=team1_wins,
@@ -173,8 +222,11 @@ def compute_team_stats(matches):
     tira = tira[["Pos", "equipo", "PTS", "PG", "PJ", "PP", "PPP", "DS", "SG", "SP", "DT", "TG", "TP"]]
     return stats_cat, tira
 
+# ------------------------------------------------------------
+# Interfaz de usuario
+# ------------------------------------------------------------
 st.title("🏐 Vóley Stats - Inferiores")
-st.markdown("Cargá el PDF con los resultados (formato **Sub XX EQUIPOLOCAL X - Y EQUIPOVISITANTE**).")
+st.markdown("Cargá el PDF con los resultados. El programa detecta automáticamente el formato.")
 st.info("ℹ️ **Nota:** El PDF no contiene los tantos por set. Las columnas `TG`, `TP` y `DT` se muestran como **0**.")
 
 uploaded_file = st.file_uploader("📂 Subí tu archivo PDF", type="pdf")
@@ -185,20 +237,17 @@ if uploaded_file is not None:
     
     if not matches:
         st.error("No se encontraron partidos en el formato esperado.")
-        with st.expander("🔍 Ver líneas leídas del PDF (primeras 30)"):
-            for i, line in enumerate(debug_lines[:30]):
+        with st.expander("🔍 Ver líneas leídas del PDF (primeras 40)"):
+            for i, line in enumerate(debug_lines[:40]):
                 st.text(f"{i+1}: {line}")
-        with st.expander("ℹ️ Explicación del formato esperado"):
+        with st.expander("ℹ️ Explicación del formato detectado"):
             st.markdown("""
-            Se espera una línea como alguna de estas variantes:
-            - `Sub 11 LANUS 0 - 2 ULP`
-            - `Sub 12 CAPAL 2-1 VIAVE`
-            - `Sub 18 GMB 3-0 FERRO`
+            Se espera una línea con resultado como:
+            - `LANUS 0 - 2 ULP`
+            - `LPV-MFV 3 - 1 FERRO`
             
-            **Condiciones:**
-            - Los nombres de equipos deben ser una sola palabra (pueden contener guiones, ej. `LPV-MFV`).
-            - El resultado debe tener dos números separados por un guión (con o sin espacios).
-            - No debe tener la palabra `vs` en la línea.
+            Y la categoría debe aparecer cerca (arriba o abajo) en una línea que contenga `Sub 11`, `Sáb 11`, etc.
+            Si ves errores de OCR como `Sáb 12` en lugar de `Sub 12`, el programa los interpreta correctamente.
             """)
         st.stop()
     

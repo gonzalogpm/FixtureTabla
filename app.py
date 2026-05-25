@@ -5,7 +5,6 @@ import re
 
 st.set_page_config(page_title="Vóley Stats - Inferiores", layout="wide")
 
-# CSS responsive
 st.markdown("""
 <style>
     @media (max-width: 768px) {
@@ -21,10 +20,10 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ------------------------------------------------------------
-# Parseador con búsqueda en rango y depuración
-# ------------------------------------------------------------
 def parse_pdf_to_matches(uploaded_file):
+    """
+    Parsea el PDF extrayendo resultados y asignando la categoría más cercana.
+    """
     matches = []
     with pdfplumber.open(uploaded_file) as pdf:
         full_text = ""
@@ -36,15 +35,15 @@ def parse_pdf_to_matches(uploaded_file):
     lines = full_text.split("\n")
     lines = [line.strip() for line in lines if line.strip()]
     
-    # Patrón para resultado
+    # Patrón para resultado: EQUIPO1  X - Y  EQUIPO2
     result_pattern = re.compile(
         r'([A-Z0-9\-]+)\s+(\d+)\s*[-–]\s*(\d+)\s+([A-Z0-9\-]+)',
         re.IGNORECASE
     )
-    # Patrón para categoría
+    # Patrón para categoría: Sub 11, Sáb 11, Sab 11
     cat_pattern = re.compile(r'(?:Sub|Sáb|Sab)\s*(\d{1,2})', re.IGNORECASE)
     
-    # Correcciones
+    # Correcciones de OCR para nombres de equipos
     corrections = {
         "LPA-MPV": "LPV-MFV", "FEBRO": "FERRO", "FERR0": "FERRO",
         "SHOLEM": "SHOLEM", "CAI": "CAI", "VIAVE": "VIAVE",
@@ -54,6 +53,16 @@ def parse_pdf_to_matches(uploaded_file):
         "ANDO": "LANUS"
     }
     
+    # Preprocesar líneas: guardar índices donde aparece categoría
+    category_indices = []
+    for i, line in enumerate(lines):
+        cat_match = cat_pattern.search(line)
+        if cat_match:
+            cat_num = int(cat_match.group(1))
+            if 11 <= cat_num <= 21:
+                category_indices.append((i, f"Sub {cat_num}"))
+    
+    # Recorrer cada línea buscando resultados
     for i, line in enumerate(lines):
         # Ignorar líneas con "vs"
         if re.search(r'\bvs\b', line, re.IGNORECASE):
@@ -68,26 +77,28 @@ def parse_pdf_to_matches(uploaded_file):
         sets2 = int(result_match.group(3))
         raw_team2 = result_match.group(4)
         
+        # Ignorar resultados inválidos (empate en sets)
+        if sets1 == sets2:
+            continue
+        
         team1 = corrections.get(raw_team1, raw_team1)
         team2 = corrections.get(raw_team2, raw_team2)
         
-        # Buscar categoría en un rango de ±5 líneas
-        categoria = None
-        for offset in range(-5, 6):
-            idx = i + offset
-            if 0 <= idx < len(lines):
-                cat_match = cat_pattern.search(lines[idx])
-                if cat_match:
-                    cat_num = int(cat_match.group(1))
-                    if 11 <= cat_num <= 21:
-                        categoria = f"Sub {cat_num}"
-                        break
+        # Encontrar la categoría más cercana (en número de líneas)
+        best_cat = None
+        best_dist = float('inf')
+        for idx_cat, cat in category_indices:
+            dist = abs(i - idx_cat)
+            if dist < best_dist:
+                best_dist = dist
+                best_cat = cat
         
-        if not categoria:
+        # Si no se encontró categoría (por ejemplo, primeras líneas), se ignora
+        if best_cat is None:
             continue
         
         matches.append({
-            "categoria": categoria,
+            "categoria": best_cat,
             "team1": team1,
             "team2": team2,
             "sets1": sets1,
@@ -97,7 +108,7 @@ def parse_pdf_to_matches(uploaded_file):
     return matches, lines
 
 # ------------------------------------------------------------
-# Funciones de estadísticas (igual que antes)
+# (El resto de las funciones: create_match_record, compute_team_stats, interfaz se mantienen igual)
 # ------------------------------------------------------------
 def create_match_record(team, category, win, sets_for, sets_against):
     points_earned = 2 if win else 1

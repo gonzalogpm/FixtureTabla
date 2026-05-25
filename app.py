@@ -20,6 +20,9 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# ------------------------------------------------------------
+# Parseador mejorado
+# ------------------------------------------------------------
 def parse_pdf_to_matches(uploaded_file):
     matches = []
     with pdfplumber.open(uploaded_file) as pdf:
@@ -28,34 +31,34 @@ def parse_pdf_to_matches(uploaded_file):
             text = page.extract_text()
             if text:
                 full_text += text + "\n"
-    lines = full_text.split("\n")
+    full_text = full_text.replace('\n', ' ')
     pattern = re.compile(
-        r'Sub\s+(\d+)\s+([A-Z0-9\-]+(?:\s+[A-Z0-9\-]+)?)\s+(\d+)\s*[-–]\s*(\d+)\s+([A-Z0-9\-]+(?:\s+[A-Z0-9\-]+)?)',
+        r'Sub\s+(\d+)\s+([A-Z0-9\-]+)\s+(\d+)\s*[-–]\s*(\d+)\s+([A-Z0-9\-]+)',
         re.IGNORECASE
     )
-    for line in lines:
-        line = line.strip()
-        if not line:
+    for match in pattern.finditer(full_text):
+        category_num = match.group(1)
+        team1 = match.group(2).strip()
+        sets1 = int(match.group(3))
+        sets2 = int(match.group(4))
+        team2 = match.group(5).strip()
+        categoria = f"Sub {category_num}"
+        if 'vs' in team1.lower() or 'vs' in team2.lower():
             continue
-        match = pattern.search(line)
-        if match:
-            category_num = match.group(1)
-            team1 = match.group(2).strip()
-            sets1 = int(match.group(3))
-            sets2 = int(match.group(4))
-            team2 = match.group(5).strip()
-            categoria = f"Sub {category_num}"
-            matches.append({
-                "categoria": categoria,
-                "team1": team1,
-                "team2": team2,
-                "sets1": sets1,
-                "sets2": sets2,
-                "set_scores": None,
-                "forfeit": None
-            })
+        matches.append({
+            "categoria": categoria,
+            "team1": team1,
+            "team2": team2,
+            "sets1": sets1,
+            "sets2": sets2,
+            "set_scores": None,
+            "forfeit": None
+        })
     return matches
 
+# ------------------------------------------------------------
+# (El resto de las funciones: create_match_record, compute_team_stats, etc. se mantienen igual)
+# ------------------------------------------------------------
 def create_match_record(team, category, win, forfeit, forfeit_opponent=False,
                         sets_for=0, sets_against=0, points_for=0, points_against=0):
     if forfeit:
@@ -167,6 +170,9 @@ def compute_team_stats(matches):
     tira = tira[["Pos", "equipo", "PTS", "PG", "PJ", "PP", "PPP", "DS", "SG", "SP", "DT", "TG", "TP"]]
     return stats_cat, tira
 
+# ------------------------------------------------------------
+# Interfaz
+# ------------------------------------------------------------
 st.title("🏐 Vóley Stats - Inferiores")
 st.markdown("Cargá el PDF con los resultados (formato **Sub XX EQUIPOLOCAL X - Y EQUIPOVISITANTE**).")
 st.info("ℹ️ **Nota:** El PDF no contiene los tantos por set. Las columnas `TG`, `TP` y `DT` se muestran como **0**.")
@@ -179,9 +185,10 @@ if uploaded_file is not None:
     if not matches:
         st.error("No se encontraron partidos en el formato esperado.")
         with st.expander("Ver formato esperado"):
-            st.markdown("Cada línea de resultado debe tener la estructura: `Sub 11 LANUS 0 - 2 ULP`")
+            st.markdown("Cada resultado debe ser como:")
             st.code("Sub 11 LANUS 0 - 2 ULP")
-            st.code("Sub 12 CAPAL 2 - 1 VIAVE")
+            st.code("Sub 12 CAPAL 2-1 VIAVE")
+            st.code("Sub 18 SHOLEM 3-0 CAI")
         st.stop()
     st.success(f"✅ Se procesaron {len(matches)} partidos.")
     stats_cat, tira_df = compute_team_stats(matches)
@@ -218,6 +225,5 @@ else:
     with st.expander("ℹ️ Ayuda: Formato del PDF"):
         st.markdown("El PDF debe contener líneas como:")
         st.code("Sub 11 LANUS 0 - 2 ULP")
-        st.code("Sub 12 CAPAL 2 - 1 VIAVE")
-        st.markdown("- Categoría: `Sub XX`")
-        st.markdown("- Equipo local, resultado `X - Y`, equipo visitante")
+        st.code("Sub 12 CAPAL 2-1 VIAVE")
+        st.markdown("(El resultado puede tener o no espacios alrededor del guión)")

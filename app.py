@@ -3,50 +3,30 @@ import pandas as pd
 import pdfplumber
 import re
 
-# ------------------------------------------------------------
-# Configuración responsive para móviles y tablets
-# ------------------------------------------------------------
 st.set_page_config(page_title="Vóley Stats", layout="wide", initial_sidebar_state="auto")
-st.markdown("""
-<style>
-    @media (max-width: 768px) {
-        .stDataFrame div[data-testid="stDataFrameResizable"] table td:nth-child(7),
-        .stDataFrame div[data-testid="stDataFrameResizable"] table th:nth-child(7) {
-            display: none;
-        }
-        .stDataFrame div[data-testid="stDataFrameResizable"] table td:nth-child(9),
-        .stDataFrame div[data-testid="stDataFrameResizable"] table th:nth-child(9) {
-            display: none;
-        }
-        .stMarkdown, .stSelectbox label, .stMultiSelect label {
-            font-size: 16px;
-        }
-        .stButton button {
-            font-size: 18px;
-            padding: 8px 16px;
-            width: 100%;
-        }
-        h1, h2, h3 {
-            font-size: 1.8rem;
-        }
-        .main > div {
-            padding-left: 1rem;
-            padding-right: 1rem;
-        }
-    }
-</style>
-""", unsafe_allow_html=True)
 
-# ------------------------------------------------------------
-# Funciones de parseo del PDF
-# ------------------------------------------------------------
+# CSS responsive (sin triples comillas problemáticas)
+st.markdown(
+    "<style>"
+    "@media (max-width: 768px) {"
+    ".stDataFrame div[data-testid='stDataFrameResizable'] table td:nth-child(7),"
+    ".stDataFrame div[data-testid='stDataFrameResizable'] table th:nth-child(7) { display: none; }"
+    ".stDataFrame div[data-testid='stDataFrameResizable'] table td:nth-child(9),"
+    ".stDataFrame div[data-testid='stDataFrameResizable'] table th:nth-child(9) { display: none; }"
+    ".stMarkdown, .stSelectbox label, .stMultiSelect label { font-size: 16px; }"
+    ".stButton button { font-size: 18px; padding: 8px 16px; width: 100%; }"
+    "h1, h2, h3 { font-size: 1.8rem; }"
+    ".main > div { padding-left: 1rem; padding-right: 1rem; }"
+    "}</style>",
+    unsafe_allow_html=True
+)
+
 def parse_pdf_to_matches(uploaded_file):
     matches = []
     with pdfplumber.open(uploaded_file) as pdf:
         full_text = ""
         for page in pdf.pages:
             full_text += page.extract_text() + "\n"
-
     lines = full_text.split("\n")
     pattern_normal = re.compile(
         r"Categoría:\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(\d+)\s*\|\s*(\d+)\s*\|\s*(.*)",
@@ -56,12 +36,10 @@ def parse_pdf_to_matches(uploaded_file):
         r"Categoría:\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(.*?)\s*\|\s*W/O",
         re.IGNORECASE
     )
-
     for line in lines:
         line = line.strip()
         if not line:
             continue
-
         wo_match = pattern_wo.search(line)
         if wo_match:
             category = wo_match.group(1).strip()
@@ -77,7 +55,6 @@ def parse_pdf_to_matches(uploaded_file):
                 "forfeit": team1
             })
             continue
-
         norm_match = pattern_normal.search(line)
         if norm_match:
             category = norm_match.group(1).strip()
@@ -131,7 +108,6 @@ def create_match_record(team, category, win, forfeit, forfeit_opponent=False,
             loss_normal = True
         loss_forfeit = False
         win_flag = win
-
     return {
         "equipo": team,
         "categoria": category,
@@ -152,7 +128,6 @@ def compute_team_stats(matches):
         team1 = match["team1"]
         team2 = match["team2"]
         forfeit = match["forfeit"]
-
         if forfeit is not None:
             losing_team = forfeit
             winning_team = team2 if team1 == losing_team else team1
@@ -165,14 +140,12 @@ def compute_team_stats(matches):
                                                sets_for=0, sets_against=3,
                                                points_for=0, points_against=75))
             continue
-
         sets1 = match["sets1"]
         sets2 = match["sets2"]
         set_scores = match["set_scores"]
         team1_wins = sets1 > sets2
         points1 = sum(s[0] for s in set_scores) if set_scores else 0
         points2 = sum(s[1] for s in set_scores) if set_scores else 0
-
         records.append(create_match_record(team1, cat,
                                            win=team1_wins,
                                            forfeit=False,
@@ -187,9 +160,7 @@ def compute_team_stats(matches):
                                            sets_against=sets1,
                                            points_for=points2,
                                            points_against=points1))
-
     df_raw = pd.DataFrame(records)
-
     def agg_func(group):
         total_pj = len(group)
         total_pg = group["win"].sum()
@@ -213,17 +184,13 @@ def compute_team_stats(matches):
             "DS": total_sg - total_sp,
             "DT": total_tg - total_tp
         })
-
     stats_cat = df_raw.groupby(["categoria", "equipo"]).apply(agg_func).reset_index()
     cols_order = ["categoria", "equipo", "PTS", "PG", "PJ", "PP", "PPP", "DS", "SG", "SP", "DT", "TG", "TP"]
     stats_cat = stats_cat[cols_order]
-
     stats_cat["Pos"] = stats_cat.groupby("categoria").apply(
         lambda g: g.sort_values(["PTS", "DS", "SG"], ascending=[False, False, False]).reset_index(drop=True).index + 1
     ).reset_index(level=0, drop=True)
-
     stats_cat = stats_cat[["categoria", "Pos", "equipo", "PTS", "PG", "PJ", "PP", "PPP", "DS", "SG", "SP", "DT", "TG", "TP"]]
-
     tira = stats_cat.groupby("equipo").agg({
         "PTS": "sum",
         "PG": "sum",
@@ -242,9 +209,6 @@ def compute_team_stats(matches):
     tira = tira[["Pos", "equipo", "PTS", "PG", "PJ", "PP", "PPP", "DS", "SG", "SP", "DT", "TG", "TP"]]
     return stats_cat, tira
 
-# ------------------------------------------------------------
-# Interfaz Streamlit (CORREGIDA - sin errores de sintaxis)
-# ------------------------------------------------------------
 st.title("🏐 Vóley Stats Móvil")
 st.markdown("Carga un PDF con resultados y obtén la tabla de posiciones **por categoría** y la **Tira general**.")
 
@@ -253,24 +217,20 @@ uploaded_file = st.file_uploader("📂 Sube tu archivo PDF", type="pdf")
 if uploaded_file is not None:
     with st.spinner("Procesando..."):
         matches = parse_pdf_to_matches(uploaded_file)
-
     if not matches:
         st.error("Formato incorrecto. Revisa la ayuda.")
         with st.expander("Ver formato esperado"):
             st.code("Categoría: Sub-18 | Equipo A | Equipo B | 3 | 1 | 25-20,25-22,23-25,25-18")
             st.code("Categoría: Sub-16 | Equipo C | Equipo D | W/O")
         st.stop()
-
     st.success(f"✅ {len(matches)} partidos procesados")
     stats_cat, tira_df = compute_team_stats(matches)
-
     with st.sidebar:
         st.header("🔍 Filtros")
         categorias = stats_cat["categoria"].unique()
         equipos = stats_cat["equipo"].unique()
         cat_filter = st.multiselect("Categoría", categorias, default=list(categorias))
         team_filter = st.multiselect("Equipo", equipos, default=[])
-
     st.subheader("🏆 Tabla de posiciones")
     if cat_filter:
         for cat in cat_filter:
@@ -285,13 +245,21 @@ if uploaded_file is not None:
                 st.info(f"No hay datos para {cat}")
     else:
         st.info("Selecciona al menos una categoría")
-
     st.subheader("📊 Tira - Suma de todas las categorías")
     st.dataframe(tira_df, use_container_width=True, height=400)
     st.download_button("📥 Descargar Tira (CSV)", tira_df.to_csv(index=False), "tira_voley.csv", "text/csv")
-
 else:
     st.info("Esperando carga de archivo PDF...")
     with st.expander("ℹ️ Ayuda: Formato del PDF"):
-        st.markdown("""
-        **Formato requerido por línea de partido**:
+        st.markdown(
+            "**Formato requerido por línea de partido**:\n\n"
+            "```\n"
+            "Categoría: Sub-18 | Equipo Rojo | Equipo Azul | 3 | 1 | 25-20,25-22,23-25,25-18\n"
+            "```\n\n"
+            "**Para partido perdido por no presentación**:\n\n"
+            "```\n"
+            "Categoría: Sub-16 | Equipo Verde | Equipo Amarillo | W/O\n"
+            "```\n\n"
+            "(El primer equipo es el que no se presenta)\n\n"
+            "**Separador obligatorio**: espacio + pipe + espacio ` | `"
+        )
